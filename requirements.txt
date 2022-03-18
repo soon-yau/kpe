@@ -2,3 +2,8 @@ scipy
 opencv-python
 pillow
 pandas
+pytorch-lightning
+omegaconf
+einops
+tokenizers
+sklearn
