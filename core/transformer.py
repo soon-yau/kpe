@@ -3,6 +3,17 @@ from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
 
+class PyTorchTransformer(nn.Module):
+    def __init__(self, num_layers, d_model, num_heads, ffwd_dim, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.layers = nn.Sequential(*[torch.nn.TransformerEncoderLayer(\
+                        d_model, num_heads, ffwd_dim, batch_first=True) for _ in range(num_layers)])
+            
+    def forward(self, *args, **kwargs):
+        return self.layers(*args, **kwargs)
+
+
 class SelfAttention(nn.Module):
     '''
         input = q, k, v each has dim (d_model)
@@ -74,13 +85,15 @@ class EncoderLayer(nn.Module):
         return x    
     
 class Transformer(nn.Module):
-    def __init__(self, num_layers, d_model, num_heads, ffwd_dim, attn_dropout=0.0, ffwd_dropout=0.0):
+    def __init__(self, num_layers, d_model, num_heads, ffwd_dim, dropout=0.0):
         super().__init__()
+        self.d_model = d_model
         self.layers = nn.ModuleList(\
-                        [EncoderLayer(d_model, num_heads, ffwd_dim, attn_dropout, ffwd_dropout) \
+                        [EncoderLayer(d_model, num_heads, ffwd_dim, dropout, dropout) \
                                      for _ in range(num_layers)])
             
     def forward(self, x, mask=None):
+
         batch_size, seq_len, _= x.size()
 
         if mask is not None:
@@ -89,3 +102,4 @@ class Transformer(nn.Module):
         for layer in self.layers:
             x = layer(x, mask)
         return x
+

@@ -1,0 +1,74 @@
+transformer:
+  target: core.transformer.PyTorchTransformer
+  params:
+    num_layers: 12
+    d_model: 512
+    num_heads: 8
+    ffwd_dim: 2048
+ 
+text_encoder:
+  target: core.tokenizer.HugTokenizer
+  params:
+    bpe_path: tokenizer-deepfashion.json
+    text_len: 256
+    truncate_text: True
+
+pose_encoder:
+  target: core.pose_utils.KPE
+  params:
+    max_num_people: 3
+
+image_encoder:
+  target: core.vae.VQGanVAE
+  params:
+    vqgan_model_path: checkpoints/vae/vqgan_deepfashion.ckpt
+    vqgan_config_path: checkpoints/vae/vqgan_deepfashion.yaml
+    device: cpu
+
+train_dataset:
+  target: core.loader.PoseDatasetPickle
+  params:
+    pickle_file: data/deepfashion_123_train.pickle
+    folder: data
+    pose_format: keypoint
+
+val_dataset:
+  target: core.loader.PoseDatasetPickle
+  params:
+    pickle_file: data/deepfashion_123_test.pickle
+    folder: data
+    pose_format: keypoint
+
+train_loader:
+  batch_size: 16
+  #num_workers: 8
+
+val_loader:
+  batch_size: 8
+  #num_workers: 4
+
+loss_constant:
+  text: 1
+  pose: 10
+  image: 7
+
+optimizer:
+  target: torch.optim.Adam
+  params:
+    lr: 0.0006
+
+scheduler:
+  target: torch.optim.lr_scheduler.ReduceLROnPlateau
+  params:
+    mode: min
+    factor: 0.5
+    patience: 3
+    cooldown: 0
+    min_lr: 0.000001
+    threshold: 0.1
+    verbose: True
+
+trainer:
+  max_steps: 100
+  num_sanity_val_steps: 0
+  #distributed_backend: ddp

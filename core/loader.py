@@ -10,36 +10,33 @@ import pandas as pd
 from einops import rearrange
 import numpy as np
 
-from core.pose_utils import keypoints_to_heatmap, RotateScale, Crop, ToTensor, ConcatSamples
+from core.pose_utils import keypoints_to_heatmap, ToTensor, ConcatSamples
 from core.pose_utils import CenterCropResize, pad_keypoints, PoseVisualizer
+from core.utils import instantiate_from_config, get_obj_from_str
 
 class PoseDatasetPickle(Dataset):
     def __init__(self,
                  pickle_file,
-                 folder='./data/',
-                 text_len=256,
+                 folder,
+                 pose_format, # 'image' or 'keypoint' or 'heatmap'
+                 text_encoder_config,
+                 pose_encoder_config,
+                 shuffle=False,                 
                  image_size=256,
-                 truncate_captions=False,
-                 tokenizer=None,
-                 shuffle=False,
-                 pose_format='image', # 'image' or 'keypoint' or 'heatmap'
-                 pose_image_shape=(256, 256),
-                 max_people=3,
+                 pose_image_shape=256,                
                  ):
         """
         @param folder: Folder containing images and text files matched by their paths' respective "stem"
         @param truncate_captions: Rather than throw an exception, captions which are too long will be truncated.
         """
         super().__init__()
-        self.pose_visualizer = PoseVisualizer('keypoint', pose_image_shape)
+        #self.pose_visualizer = PoseVisualizer('keypoint', (pose_image_shape, pose_image_shape))
         self.pose_format = pose_format
         self.shuffle = shuffle
         self.df = pd.read_pickle(pickle_file)
         self.root_dir = Path(folder)
-        self.text_len = text_len
-        self.truncate_captions = truncate_captions
-        self.tokenizer = tokenizer
-        self.max_people = max_people
+        self.text_encoder = instantiate_from_config(text_encoder_config)
+        self.pose_encoder = instantiate_from_config(pose_encoder_config)
         self.image_keypoint_transform = T.Compose([
             #CenterCropResize(),
             #RotateScale((-10,10),(1.0,1.1)),
@@ -72,7 +69,7 @@ class PoseDatasetPickle(Dataset):
         try:
             description = choice(descriptions)
         except IndexError as zero_captions_in_file_ex:
-            print(f"An exception occurred trying to load file {text_file}.")
+            print(f"An exception occurred trying to load captions.")
             print(f"Skipping index {ind}")
             return self.skip_sample(ind)
 
@@ -80,32 +77,11 @@ class PoseDatasetPickle(Dataset):
         image = image.convert('RGB') if image.mode != 'RGB' else image
         image = np.array(image)
 
-        tokenized_text = self.tokenizer.tokenize(
-            description,
-            self.text_len,
-            truncate_text=self.truncate_captions
-        ).squeeze(0)
-        
-        try:
-            # augmentation, to do, multiple keypoints
-            padded_keypoints = pad_keypoints(keypoints, self.max_people)
-            #padded_keypoints = keypoints
-            augmented = self.image_keypoint_transform({'image':image, 'keypoints':padded_keypoints})
-            image_tensor, keypoints = augmented['image'], augmented['keypoints']
+        text_tokens = self.text_encoder(description).squeeze(0)
 
-            if self.pose_format == 'keypoint':
-                pose_tensor = keypoints
-            elif self.pose_format == 'image':
-                pose_tensor = self.pose_visualizer.convert(keypoints)
-            else:
-                pose_tensor = keypoints
-                #raise(ValueError, f'f pose format of {self.pose_format}is undefined')
-                
-        except (PIL.UnidentifiedImageError, OSError) as corrupt_image_exceptions:
-            print(f"An exception occurred trying to load file {image_file}.")
-            print(f"Skipping index {ind}")
-            return self.skip_sample(ind)
+        augmented = self.image_keypoint_transform({'image':image, 'keypoints':keypoints})
+        image_tensor, keypoints = augmented['image'], augmented['keypoints']
 
-        # Success
+        pose_tokens = self.pose_encoder(keypoints)
 
-        return tokenized_text, image_tensor, pose_tensor
+        return text_tokens, pose_tokens, image_tensor

@@ -2,10 +2,12 @@ import cv2
 import math
 import numpy as np
 import torch
+from torch import nn
 from torchvision import transforms as T
 from copy import deepcopy
 import torch
 from itertools import cycle
+from einops import rearrange
 
 class Keypoints2Image:
     def __init__(self, mode='openpose_body_25', image_shape=(256, 256), background_white=False):
@@ -157,8 +159,8 @@ class PoseVisualizer:
     def convert(self, x):
         return self.fn(x)
 
-
-class RotateScale(object):
+    
+class RandomRotateScale(object):
     def __init__(self, angle_degree=(0., 0.), scale=(1,1)):
         self.angle_degree = angle_degree
         self.scale = scale
@@ -185,7 +187,7 @@ class RotateScale(object):
         
         return {'image':rotated_image, 'keypoints':new_kp.astype(np.float32)}
 
-class Crop(object):
+class RandomCrop(object):
     
     def __init__(self, margins=(0.05, 1.)):
         self.margin = margins
@@ -295,7 +297,10 @@ class CenterCropResize(object):
 
         return {'image':crop_image, 'keypoints':kps}
 
-
+def pad_keypoints(keypoints, max_num, num_keypoints=25):
+    num_person = keypoints.shape[0]
+    return np.insert(keypoints, tuple((max_num - num_person)*[num_person]), 0, 0)
+'''
 def pad_keypoints(keypoints, max_num, num_keypoints=25):
     padded = np.zeros((max_num, num_keypoints, 3), dtype=np.float32)
     for i, keypoint in enumerate(keypoints):
@@ -303,3 +308,37 @@ def pad_keypoints(keypoints, max_num, num_keypoints=25):
             break
         padded[i] = keypoint.astype(np.float32)
     return padded
+'''
+'''
+class KPE(nn.Module):
+    def __init__(self, max_num_people, d_model, projection=None):
+        self.max_num_people = max_num_people
+        super().__init__()
+        if projection == 'linear':
+            self.layer = nn.Linear(max_num_people, d_model)
+        elif projection == None:
+            assert 3*max_num_people <= d_model
+            self.layer = lambda x: x
+        else:
+            raise ValueError(f"Invalid projection of ({projection})")
+    
+    def forward(self, x):
+        return self.layer(x)
+
+    def preprocess(self, keypoints:np.array):    # keyoints of single person
+        num_person = keypoints.shape[0]
+        repeats = tuple((self.max_num_people - num_person)*[num_person])
+        return np.insert(keypoints, repeats, 0, 0)
+'''
+
+class KPE(nn.Module):
+    def __init__(self, max_num_people):
+        super().__init__()
+        self.max_num_people = max_num_people
+
+    def __call__(self, keypoints:np.array):    # keyoints of single person
+        num_person = keypoints.shape[0]
+        repeats = tuple((self.max_num_people - num_person)*[num_person])
+        padded_keypoints = np.insert(keypoints, repeats, 0, 0)
+        return rearrange(padded_keypoints, 'a b c -> b (a c)')
+        
