@@ -331,14 +331,32 @@ class KPE(nn.Module):
         return np.insert(keypoints, repeats, 0, 0)
 '''
 
-class KPE(nn.Module):
+class KPE:
     def __init__(self, max_num_people):
         super().__init__()
         self.max_num_people = max_num_people
 
+    '''
+        assume single sample, no batch dimension
+    '''
     def __call__(self, keypoints:np.array):    # keyoints of single person
+
         num_person = keypoints.shape[0]
         repeats = tuple((self.max_num_people - num_person)*[num_person])
         padded_keypoints = np.insert(keypoints, repeats, 0, 0)
         return rearrange(padded_keypoints, 'a b c -> b (a c)')
-        
+
+    def decode_single(self, torch_tokens):
+        tokens = torch_tokens.cpu().detach()
+        num_people = tokens.shape[1]//3
+        num_kp = tokens.shape[0]
+        result = np.zeros((num_people, num_kp, 3))
+        for p in range(num_people):
+            for i in range(25):
+                result[p,i,:] = tokens[i][3*p:3*(p+1)]
+                
+        valid = np.mean(result, axis=(1,2))!=0
+        return result[valid]
+
+    def decode(self, tokens): # batch
+        return [self.decode_single(t) for t in tokens]

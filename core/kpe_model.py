@@ -12,6 +12,7 @@ from PIL import Image
 from axial_positional_embedding import AxialPositionalEmbedding
 from einops import rearrange
 
+import wandb
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 import torch
@@ -20,6 +21,7 @@ import torch.nn.functional as F
 from torchvision import transforms as T
 
 from core.utils import instantiate_from_config, get_obj_from_str
+from core.pose_utils import Keypoints2Image
 
 def set_requires_grad(model, value):
     for param in model.parameters():
@@ -33,13 +35,22 @@ def top_k(logits, thres = 0.5):
     probs.scatter_(1, ind, val)
     return probs
 
+def eval_decorator(fn):
+    def inner(model, *args, **kwargs):
+        was_training = model.training
+        model.eval()
+        out = fn(model, *args, **kwargs)
+        model.train(was_training)
+        return out
+    return inner
+
+
 class KPEModel(pl.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
 
-        self.embeds = []
-        self.sections = []
+        self.pose2image = Keypoints2Image()
 
         self.transformer = instantiate_from_config(config['transformer'])
         d_model = self.transformer.d_model
@@ -107,7 +118,7 @@ class KPEModel(pl.LightningModule):
         pose_embedding = self.pose_embed(pose_tokens)
 
         if image_tokens == None:
-            image_tokenpose_embeddingpose_embeddings = torch.zeros((batch_size,1), dtype=torch.int64)
+            image_tokens = torch.zeros((batch_size,1), dtype=torch.int64).to(self.device)
 
         image_embedding = self.image_embed(image_tokens)
         image_embedding += self.image_pos_emb(image_embedding)
@@ -135,15 +146,11 @@ class KPEModel(pl.LightningModule):
         text_logits = rearrange(text_logits, 'n d c -> n c d')
         image_logits = rearrange(image_logits, 'n d c -> n c d')
         
-        try:
-            loss_text = self.lambda_text * F.cross_entropy(text_logits, text_tokens)
-            loss_image = self.lambda_image * F.cross_entropy(image_logits, image_tokens)
-            loss_pose = self.lambda_pose * F.mse_loss(pose_outputs, pose_embedding)
-        
-        except:
-            import pdb
-            pdb.set_trace()
 
+        loss_text = self.lambda_text * F.cross_entropy(text_logits, text_tokens)
+        loss_image = self.lambda_image * F.cross_entropy(image_logits, image_tokens)
+        loss_pose = self.lambda_pose * F.mse_loss(pose_outputs, pose_embedding)
+        
         total_loss = loss_text + loss_pose + loss_text
 
         self.log('train_loss_text', loss_text)
@@ -155,8 +162,15 @@ class KPEModel(pl.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         text_tokens, pose_tokens, image_tensor = batch
+        texts = [self.text_encoder.decode(t) for t in text_tokens.cpu().numpy()]
+        images = self.generate_image(text_tokens, pose_tokens, None)
 
-        images = self.generate_image(text_tokens, pose_tokens, image_tensor)
+        poses = self.pose_encoder.decode(pose_tokens)
+        pose_images =torch.stack([T.ToTensor()(self.pose2image(pose)) for pose in poses])
+        pose_images = pose_images.to(self.device)
+        display_image = torch.cat((pose_images, images, image_tensor), dim=-1)
+        self.logger.experiment.log({"generated": [wandb.Image(image, caption=caption) \
+            for image, caption in zip(display_image, texts)]})
 
     def preprocess(self, texts:List[str], 
                       poses:np.array, 
@@ -173,23 +187,20 @@ class KPEModel(pl.LightningModule):
         return text_tokens, pose_tokens, image_tensor
 
     @torch.no_grad()
+    @eval_decorator
     def generate_image(self, text_tokens, pose_tokens, image_tensor=None, filter_thres=0.9, temperature=1.):
-        self.eval()
-        image_tokens = self.image_encoder(image_tensor)
+        #image_tokens = self.image_encoder(image_tensor)
+        image_tokens = None
         start_idx = 0 #if image_tokens==None else image_tokens.shape[1]
         for i in range(start_idx, self.image_token_len):
-            try:
-                text_logits, pose_outputs, image_logits, _ = self.forward(text_tokens, pose_tokens, image_tensor)
-                logits = image_logits[:,-1,:]
-                filtered_logits = top_k(logits, thres = filter_thres)
-                probs = F.softmax(filtered_logits / temperature, dim = -1)
-                sample = torch.multinomial(probs, 1)
-                if image_tokens == None:
-                    image_tokens = sample
-                else:
-                    image_tokens = torch.cat((image_tokens, sample), dim=-1)
-            except:
-                pdb.set_trace()
+            text_logits, pose_outputs, image_logits, _ = self.forward(text_tokens, pose_tokens, image_tokens)
+            logits = image_logits[:,-1,:]
+            filtered_logits = top_k(logits, thres = filter_thres)
+            probs = F.softmax(filtered_logits / temperature, dim = -1)
+            sample = torch.multinomial(probs, 1)
+            if image_tokens == None:
+                image_tokens = sample
+            else:
+                image_tokens = torch.cat((image_tokens, sample), dim=-1)
         images = self.image_encoder.decode(image_tokens)
-        self.train()
         return images

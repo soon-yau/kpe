@@ -6,7 +6,7 @@ from omegaconf import OmegaConf
 import pytorch_lightning as pl
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 
 from typing import List
 from copy import deepcopy
@@ -26,6 +26,7 @@ def get_parser():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help='Path to config file')
+    parser.add_argument("--disable_logger", required=False, action='store_true')
     return parser
 
 
@@ -38,14 +39,17 @@ def main():
 
     # logger
     project_name = os.path.basename(args.config).split('.')[0]
-    log_dir = f"logs/{project_name}"
     time_now = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    log_dir = f"logs/{project_name}/{time_now}/"
+    os.makedirs(log_dir, exist_ok=True)
+    if not args.disable_logger:
+        logger = WandbLogger(project=project_name, log_model=True,
+                                save_dir=log_dir)
+    else:
+        logger = None
 
-    wandb_logger = WandbLogger(project=project_name, log_model=True,
-                               save_dir=log_dir)
-
-    ckpt_callback = ModelCheckpoint(dirpath=log_dir, 
-                        monitor='train_loss_total', save_top_k=2)
+    ckpt_cb = ModelCheckpoint(dirpath=log_dir, 
+                        monitor='train_loss_total', save_top_k=3)
     
 
     # Dataloader
@@ -67,10 +71,12 @@ def main():
     model = KPEModel(config)
 
     # Trainer
+    lr_monitor_cb = LearningRateMonitor(logging_interval='epoch')
+
     trainer_config = config.get("trainer", OmegaConf.create())
     trainer = Trainer.from_argparse_args(args, 
-                    #logger=wandb_logger,
-                    callbacks=[ckpt_callback],
+                    logger=logger,
+                    callbacks=[ckpt_cb, lr_monitor_cb],
                     **trainer_config)
 
     trainer.fit(model, train_loader, val_loader)
