@@ -23,7 +23,6 @@ image_encoder:
   params:
     vqgan_model_path: checkpoints/vae/vqgan_deepfashion.ckpt
     vqgan_config_path: checkpoints/vae/vqgan_deepfashion.yaml
-    device: cpu
 
 train_dataset:
   target: core.loader.PoseDatasetPickle
@@ -32,21 +31,18 @@ train_dataset:
     folder: data
     pose_format: keypoint
 
-val_dataset:
-  target: core.loader.PoseDatasetPickle
-  params:
-    pickle_file: data/deepfashion_123_test.pickle
-    folder: data
-    pose_format: keypoint
+#val_dataset:
+#  target: core.loader.PoseDatasetPickle
+#  params:
+#    pickle_file: data/deepfashion_123_test.pickle
+#    folder: data
+#    pose_format: keypoint
 
 train_loader:
-  batch_size: 16
-  #num_workers: 8
-
-val_loader:
-  batch_size: 8
-  #num_workers: 4
-
+  batch_size: 20
+  num_workers: 10
+  drop_last: True
+  
 loss_constant:
   text: 1
   pose: 10
@@ -69,6 +65,11 @@ scheduler:
     verbose: True
 
 trainer:
-  max_steps: 100
+  max_epochs: 50
   num_sanity_val_steps: 0
-  #distributed_backend: ddp
+  #val_check_interval: 200
+  #distributed_backend: dp
+
+logging:
+  image_frequency: 10
+  max_images: 4

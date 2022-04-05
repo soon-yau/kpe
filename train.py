@@ -18,7 +18,7 @@ from torch import nn
 from torchvision import transforms as T
 from torch.utils.data import DataLoader
 
-from core.kpe_model import KPEModel
+from core.kpe_model import KPEModel, ImageLogger
 from core.loader import PoseDatasetPickle
 from core.utils import get_obj_from_str, instantiate_from_config
 
@@ -59,27 +59,28 @@ def main():
         **config.train_dataset.params)
 
     train_loader = DataLoader(train_dataset, shuffle=True, **config.train_loader)
-
+    '''
     val_dataset = get_obj_from_str(config.val_dataset.target)(\
         text_encoder_config=config.text_encoder,
         pose_encoder_config=config.pose_encoder,
         **config.val_dataset.params)
 
     val_loader = DataLoader(val_dataset, shuffle=False, **config.val_loader)
-
+    '''
     # Model
     model = KPEModel(config)
 
     # Trainer
     lr_monitor_cb = LearningRateMonitor(logging_interval='epoch')
+    image_log_cb = ImageLogger(config.logging.image_frequency, config.logging.max_images)
 
     trainer_config = config.get("trainer", OmegaConf.create())
     trainer = Trainer.from_argparse_args(args, 
                     logger=logger,
-                    callbacks=[ckpt_cb, lr_monitor_cb],
+                    callbacks=[ckpt_cb, lr_monitor_cb, image_log_cb],
                     **trainer_config)
 
-    trainer.fit(model, train_loader, val_loader)
+    trainer.fit(model, train_loader)
 
 if __name__ == "__main__":
     main()

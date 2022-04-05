@@ -15,6 +15,8 @@ from einops import rearrange
 import wandb
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import Callback
+from pytorch_lightning.utilities.distributed import rank_zero_only
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -78,6 +80,11 @@ class KPEModel(pl.LightningModule):
             axial_shape = (image_token_dim, image_token_dim))
         
         # embedding to logits
+        self.to_logits = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, self.image_token_size+self.text_token_size))        
+
+        '''
         self.to_logits_text = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, self.text_token_size))    
@@ -85,7 +92,7 @@ class KPEModel(pl.LightningModule):
         self.to_logits_image = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.Linear(d_model, self.image_token_size))        
-        
+        '''
         # loss constants
         self.lambda_text = config['loss_constant']['text']
         self.lambda_pose = config['loss_constant']['pose']
@@ -107,7 +114,8 @@ class KPEModel(pl.LightningModule):
         scheduler = get_obj_from_str(config_scheduler.target)(\
             optimizer=optimizer, **config_scheduler.params)
     
-        return {"optimizer":optimizer, "lr_scheduler":scheduler, "monitor":"test_loss_total"}
+        return {"optimizer":optimizer, "lr_scheduler":scheduler, 
+                "monitor":"train_loss_image"}
 
     def forward(self, text_tokens, pose_tokens, image_tokens=None):
         batch_size, text_len = text_tokens.shape        
@@ -133,8 +141,8 @@ class KPEModel(pl.LightningModule):
         seq_offset += pose_len
         image_outputs = outputs[:,seq_offset:,:]
         
-        text_logits = self.to_logits_text(text_outputs)
-        image_logits = self.to_logits_image(image_outputs)
+        text_logits = self.to_logits(text_outputs)
+        image_logits = self.to_logits(image_outputs)
         
         return text_logits, pose_outputs, image_logits, pose_embedding
     
@@ -148,7 +156,7 @@ class KPEModel(pl.LightningModule):
         
 
         loss_text = self.lambda_text * F.cross_entropy(text_logits, text_tokens)
-        loss_image = self.lambda_image * F.cross_entropy(image_logits, image_tokens)
+        loss_image = self.lambda_image * F.cross_entropy(image_logits, image_tokens+self.text_token_size)
         loss_pose = self.lambda_pose * F.mse_loss(pose_outputs, pose_embedding)
         
         total_loss = loss_text + loss_pose + loss_text
@@ -159,7 +167,7 @@ class KPEModel(pl.LightningModule):
         self.log('train_loss_total', total_loss)
 
         return total_loss
-    
+    '''
     def validation_step(self, batch, batch_idx):
         text_tokens, pose_tokens, image_tensor = batch
         texts = [self.text_encoder.decode(t) for t in text_tokens.cpu().numpy()]
@@ -171,7 +179,7 @@ class KPEModel(pl.LightningModule):
         display_image = torch.cat((pose_images, images, image_tensor), dim=-1)
         self.logger.experiment.log({"generated": [wandb.Image(image, caption=caption) \
             for image, caption in zip(display_image, texts)]})
-
+    '''
     def preprocess(self, texts:List[str], 
                       poses:np.array, 
                       image:np.array,
@@ -197,10 +205,40 @@ class KPEModel(pl.LightningModule):
             logits = image_logits[:,-1,:]
             filtered_logits = top_k(logits, thres = filter_thres)
             probs = F.softmax(filtered_logits / temperature, dim = -1)
-            sample = torch.multinomial(probs, 1)
+            sample = torch.multinomial(probs, 1) - self.text_token_size
+            sample = torch.maximum(sample, torch.zeros_like(sample).to(self.device))
             if image_tokens == None:
                 image_tokens = sample
             else:
                 image_tokens = torch.cat((image_tokens, sample), dim=-1)
         images = self.image_encoder.decode(image_tokens)
         return images
+
+
+class ImageLogger(Callback):
+    def __init__(self, frequency, max_num_images=None):
+        self.frequency = frequency
+        self.max_num_images = max_num_images
+
+    def log_image(self, pl_module, batch):
+        device = pl_module.device
+        text_tokens, pose_tokens, image_tensor = batch
+        text_tokens, pose_tokens, image_tensor = text_tokens.to(device), pose_tokens.to(device), image_tensor.to(device)
+        if self.max_num_images:
+            text_tokens = text_tokens[:self.max_num_images] 
+            pose_tokens = pose_tokens[:self.max_num_images] 
+            image_tensor = image_tensor[:self.max_num_images] 
+        texts = [pl_module.text_encoder.decode(t) for t in text_tokens.cpu().numpy()]
+        images = pl_module.generate_image(text_tokens, pose_tokens, None)
+
+        poses = pl_module.pose_encoder.decode(pose_tokens)
+        pose_images =torch.stack([T.ToTensor()(pl_module.pose2image(pose)) for pose in poses])
+        pose_images = pose_images.to(pl_module.device)
+        display_image = torch.cat((pose_images, images, image_tensor), dim=-1)
+        pl_module.logger.experiment.log({"generated": [wandb.Image(image, caption=caption) \
+            for image, caption in zip(display_image, texts)]})
+
+    @rank_zero_only
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, unused=0):
+        if batch_idx % self.frequency == 0:
+            self.log_image(pl_module, batch)
