@@ -50,6 +50,8 @@ def eval_decorator(fn):
 class KPEModel(pl.LightningModule):
     def __init__(self, config):
         super().__init__()
+        self.save_hyperparameters()
+
         self.config = config
 
         self.pose2image = Keypoints2Image()
@@ -98,7 +100,11 @@ class KPEModel(pl.LightningModule):
         self.lambda_pose = config['loss_constant']['pose']
         self.lambda_image = config['loss_constant']['image']
 
-        self.save_hyperparameters()
+        total_tokens = self.image_token_size + self.text_token_size
+        logits_range = torch.arange(total_tokens)
+        logits_range = rearrange(logits_range, 'd -> () () d')
+        self.image_mask = logits_range < self.text_token_size
+        self.text_mask = ~self.image_mask
 
     def configure_optimizers(self):
         # Optimizer
@@ -142,8 +148,12 @@ class KPEModel(pl.LightningModule):
         image_outputs = outputs[:,seq_offset:,:]
         
         text_logits = self.to_logits(text_outputs)
-        image_logits = self.to_logits(image_outputs)
+        max_neg_value = -torch.finfo(text_logits.dtype).max
+        text_logits.masked_fill_(self.text_mask.to(self.device), max_neg_value)
         
+        image_logits = self.to_logits(image_outputs)
+        image_logits.masked_fill_(self.image_mask[:,:len(image_logits),:].to(self.device), max_neg_value)
+
         return text_logits, pose_outputs, image_logits, pose_embedding
     
     def training_step(self, batch, batch_idx):
@@ -159,7 +169,7 @@ class KPEModel(pl.LightningModule):
         loss_image = self.lambda_image * F.cross_entropy(image_logits, image_tokens+self.text_token_size)
         loss_pose = self.lambda_pose * F.mse_loss(pose_outputs, pose_embedding)
         
-        total_loss = loss_text + loss_pose + loss_text
+        total_loss = (loss_text + loss_pose + loss_text)/self.lambda_image
 
         self.log('train_loss_text', loss_text)
         self.log('train_loss_pose', loss_pose)
@@ -206,7 +216,6 @@ class KPEModel(pl.LightningModule):
             filtered_logits = top_k(logits, thres = filter_thres)
             probs = F.softmax(filtered_logits / temperature, dim = -1)
             sample = torch.multinomial(probs, 1) - self.text_token_size
-            sample = torch.maximum(sample, torch.zeros_like(sample).to(self.device))
             if image_tokens == None:
                 image_tokens = sample
             else:
@@ -240,5 +249,5 @@ class ImageLogger(Callback):
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, unused=0):
-        if batch_idx % self.frequency == 0:
+        if (batch_idx + 1) % self.frequency == 0:
             self.log_image(pl_module, batch)
