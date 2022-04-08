@@ -51,7 +51,7 @@ loss_constant:
 optimizer:
   target: torch.optim.Adam
   params:
-    lr: 0.0006
+    lr: 1e-4
 
 scheduler:
   target: torch.optim.lr_scheduler.ReduceLROnPlateau
@@ -71,5 +71,5 @@ trainer:
   #distributed_backend: dp
 
 logging:
-  image_frequency: 10
+  image_frequency: 50
   max_images: 4
