@@ -46,6 +46,9 @@ def eval_decorator(fn):
         return out
     return inner
 
+def get_trainable_params(model):
+    return [params for params in model.parameters() if params.requires_grad]
+
 
 class KPEModel(pl.LightningModule):
     def __init__(self, config):
@@ -67,6 +70,7 @@ class KPEModel(pl.LightningModule):
 
         # sequence length
         self.text_token_len = self.text_encoder.text_len
+        self.pose_token_len = self.pose_encoder.num_keypoints
 
         # dimension
         # unique token for each padding position, hence + self.text_token_len
@@ -105,7 +109,7 @@ class KPEModel(pl.LightningModule):
         # Optimizer
         config_optimizer = self.config.optimizer
         optimizer = get_obj_from_str(config_optimizer.target)(\
-            params=self.parameters(), **config_optimizer.params)
+            params=get_trainable_params(self), **config_optimizer.params)
 
         config_scheduler = self.config.get('scheduler', None)
 
@@ -121,6 +125,9 @@ class KPEModel(pl.LightningModule):
     def forward(self, text_tokens, pose_tokens, image_tokens=None, return_loss=False):
         batch_size, text_len = text_tokens.shape
         assert text_len==self.text_token_len
+
+        total_seq_len = self.text_token_len + self.image_token_len + self.pose_token_len
+
         # add unique padding
         text_range = torch.arange(text_len, device = self.device) \
             + (self.text_token_size - text_len)
@@ -141,21 +148,20 @@ class KPEModel(pl.LightningModule):
         image_embedding += self.image_pos_emb(image_embedding)
         image_len = pose_tokens.shape[1]
         tokens = torch.cat((text_embedding, pose_embedding, image_embedding), axis=1)            
-            
-        outputs = self.transformer(tokens)
+
+        if tokens.shape[1] > total_seq_len:
+            tokens = tokens[:, :-1]
 
         seq_offset = text_len
-        text_outputs = outputs[:,:seq_offset,:]
+        outputs = self.transformer(tokens)
+        logits = self.to_logits(outputs)
+        max_neg_value = -torch.finfo(logits.dtype).max
+
+        text_logits = logits[:,:seq_offset,:]
         pose_outputs = outputs[:,seq_offset:seq_offset+pose_len,:]
-        seq_offset += pose_len
-        image_outputs = outputs[:,seq_offset:,:]
-        
-        text_logits = self.to_logits(text_outputs)
-        max_neg_value = -torch.finfo(text_logits.dtype).max
+        image_logits = logits[:,seq_offset+pose_len:,:]
+
         text_logits.masked_fill_(self.text_mask.to(self.device), max_neg_value)
-        
-        image_logits = self.to_logits(image_outputs)
-        #image_logits.masked_fill_(self.image_mask[:,:image_logits.shape[1],:].to(self.device), max_neg_value)
         image_logits.masked_fill_(self.image_mask.to(self.device), max_neg_value)
 
         if not return_loss:
@@ -165,39 +171,38 @@ class KPEModel(pl.LightningModule):
         image_logits = rearrange(image_logits, 'n d c -> n c d')
         
         loss_text = self.lambda_text * F.cross_entropy(text_logits, text_tokens[:,1:])
-        loss_image = self.lambda_image * F.cross_entropy(image_logits[:,:,:-1], \
+        loss_image = self.lambda_image * F.cross_entropy(image_logits, \
                                                         image_tokens+self.text_token_size)
         loss_pose = self.lambda_pose * F.mse_loss(pose_outputs, pose_embedding)
         
-        total_loss = (loss_text + loss_pose + loss_text)/self.lambda_image
+        total_loss = (loss_text + loss_pose + loss_image)/self.lambda_image
 
-        self.log('train/loss_text', loss_text)
-        self.log('train/loss_pose', loss_pose)
-        self.log('train/loss_image', loss_image)
-        self.log('train/loss_total', total_loss)
-
-        return total_loss
+        return {'total':total_loss, 'text':loss_text, 'image':loss_image, 'pose':loss_pose}
 
     def training_step(self, batch, batch_idx):
 
         text_tokens, pose_tokens, image_tensor = batch
         image_tokens = self.image_encoder(image_tensor)
-        total_loss = self.forward(text_tokens, pose_tokens, image_tokens, return_loss=True)
+        losses = self.forward(text_tokens, pose_tokens, image_tokens, return_loss=True)
 
-        return total_loss
-    '''
+        self.log('train/loss_text', losses['text'])
+        self.log('train/loss_pose', losses['pose'])
+        self.log('train/loss_image', losses['image'])
+        self.log('train/loss_total', losses['total'])
+
+        return losses['total']
+
     def validation_step(self, batch, batch_idx):
-        text_tokens, pose_tokens, image_tensor = batch
-        texts = [self.text_encoder.decode(t) for t in text_tokens.cpu().numpy()]
-        images = self.generate_image(text_tokens, pose_tokens, None)
 
-        poses = self.pose_encoder.decode(pose_tokens)
-        pose_images =torch.stack([T.ToTensor()(self.pose2image(pose)) for pose in poses])
-        pose_images = pose_images.to(self.device)
-        display_image = torch.cat((pose_images, images, image_tensor), dim=-1)
-        self.logger.experiment.log({"generated": [wandb.Image(image, caption=caption) \
-            for image, caption in zip(display_image, texts)]})
-    '''
+        text_tokens, pose_tokens, image_tensor = batch
+        image_tokens = self.image_encoder(image_tensor)
+        losses = self.forward(text_tokens, pose_tokens, image_tokens, return_loss=True)
+
+        self.log('val/loss_text', losses['text'])
+        self.log('val/loss_pose', losses['pose'])
+        self.log('val/loss_image', losses['image'])
+        self.log('val/loss_total', losses['total'])
+
     def preprocess(self, texts:List[str], 
                       poses:np.array, 
                       images:np.array,
@@ -215,11 +220,10 @@ class KPEModel(pl.LightningModule):
     @torch.no_grad()
     @eval_decorator
     def generate_image(self, text_tokens, pose_tokens, image_tensor=None, filter_thres=0.9, temperature=1.):
-        #image_tokens = self.image_encoder(image_tensor)
         image_tokens = None
         start_idx = 0 #if image_tokens==None else image_tokens.shape[1]
         for i in range(start_idx, self.image_token_len):
-            text_logits, pose_outputs, image_logits = self.forward(text_tokens, pose_tokens, image_tokens)
+            text_logits, pose_outputs, image_logits = self(text_tokens, pose_tokens, image_tokens)
             logits = image_logits[:,-1,:]
             filtered_logits = top_k(logits, thres = filter_thres)
             probs = F.softmax(filtered_logits / temperature, dim = -1)
@@ -230,8 +234,8 @@ class KPEModel(pl.LightningModule):
                 image_tokens = torch.cat((image_tokens, sample), dim=-1)
 
         images = self.image_encoder.decode(image_tokens)
-        return images
 
+        return images
 
 class ImageLogger(Callback):
     def __init__(self, frequency, max_num_images=None):
@@ -247,8 +251,10 @@ class ImageLogger(Callback):
             text_tokens = text_tokens[:self.max_num_images] 
             pose_tokens = pose_tokens[:self.max_num_images] 
             image_tensor = image_tensor[:self.max_num_images] 
-        texts = [pl_module.text_encoder.decode(t) for t in text_tokens.cpu().numpy()]
         images = pl_module.generate_image(text_tokens, pose_tokens, None)
+        texts = [pl_module.text_encoder.decode(t) for t in text_tokens.cpu().numpy()]
+
+        #reconst_images = pl_module.image_encoder.decode(pl_module.image_encoder(image_tensor))
 
         poses = pl_module.pose_encoder.decode(pose_tokens)
         pose_images =torch.stack([T.ToTensor()(pl_module.pose2image(pose)) for pose in poses])

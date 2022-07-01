@@ -1,10 +1,21 @@
 transformer:
-  target: core.transformer.PyTorchTransformer
+  target: dalle_pytorch.transformer.Transformer
   params:
-    num_layers: 12
-    d_model: 512
-    num_heads: 8
-    ffwd_dim: 2048
+    depth: 12
+    dim: 512
+    heads: 8
+    dim_head: 64
+    seq_len: 537
+    rotary_emb: False
+    image_fmap_size: 32
+ 
+#transformer:
+#  target: core.transformer.PyTorchTransformer
+#  params:
+#    num_layers: 12
+#    d_model: 512
+#    num_heads: 8
+#    ffwd_dim: 2048
  
 text_encoder:
   target: core.tokenizer.HugTokenizer
@@ -31,16 +42,21 @@ train_dataset:
     folder: data
     pose_format: keypoint
 
-#val_dataset:
-#  target: core.loader.PoseDatasetPickle
-#  params:
-#    pickle_file: data/deepfashion_123_test.pickle
-#    folder: data
-#    pose_format: keypoint
-
 train_loader:
-  batch_size: 20
-  num_workers: 10
+  batch_size: 16
+  num_workers: 8
+  drop_last: True
+
+val_dataset:
+  target: core.loader.PoseDatasetPickle
+  params:
+    pickle_file: data/deepfashion_123_test.pickle
+    folder: data
+    pose_format: keypoint
+
+val_loader:
+  batch_size: 16
+  num_workers: 8
   drop_last: True
   
 loss_constant:
@@ -51,7 +67,7 @@ loss_constant:
 optimizer:
   target: torch.optim.Adam
   params:
-    lr: 1e-4
+    lr: 6e-4
 
 scheduler:
   target: torch.optim.lr_scheduler.ReduceLROnPlateau
@@ -66,10 +82,12 @@ scheduler:
 
 trainer:
   max_epochs: 50
-  num_sanity_val_steps: 0
+  #num_sanity_val_steps: 0
+  gradient_clip_val: 0.5
   #val_check_interval: 200
-  #distributed_backend: dp
+  #distributed_backend: ddp
+  #gpus: [0]
 
 logging:
-  image_frequency: 50
+  image_frequency: 200
   max_images: 4

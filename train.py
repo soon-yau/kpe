@@ -7,6 +7,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.strategies import DDPStrategy
 
 from typing import List
 from copy import deepcopy
@@ -34,7 +35,6 @@ def main():
     parser = get_parser()
     parser = Trainer.add_argparse_args(parser)
     args, unknown_args = parser.parse_known_args()
-
     config = OmegaConf.load(args.config)
 
     # logger
@@ -49,7 +49,7 @@ def main():
         logger = None
 
     ckpt_cb = ModelCheckpoint(dirpath=log_dir, 
-                        monitor='train_loss_total', save_top_k=3)
+                        monitor='val/loss_image', save_top_k=1)
     
 
     # Dataloader
@@ -59,16 +59,14 @@ def main():
         **config.train_dataset.params)
 
     train_loader = DataLoader(train_dataset, shuffle=True, **config.train_loader)
-    '''
+    
     val_dataset = get_obj_from_str(config.val_dataset.target)(\
         text_encoder_config=config.text_encoder,
         pose_encoder_config=config.pose_encoder,
         **config.val_dataset.params)
 
     val_loader = DataLoader(val_dataset, shuffle=False, **config.val_loader)
-    '''
-    # Model
-    model = KPEModel(config)
+    
 
     # Trainer
     lr_monitor_cb = LearningRateMonitor(logging_interval='epoch')
@@ -78,9 +76,16 @@ def main():
     trainer = Trainer.from_argparse_args(args, 
                     logger=logger,
                     callbacks=[ckpt_cb, lr_monitor_cb, image_log_cb],
+                    strategy=DDPStrategy(find_unused_parameters=False),
                     **trainer_config)
 
-    trainer.fit(model, train_loader)
+    # Model
+    config.optimizer.params.lr*=trainer.num_devices
+    print(f"Resetting learning rate to {config.optimizer.params.lr:.6f}")
+    model = KPEModel(config)
+
+    #logger.watch(model.transformer, log='all', log_freq=100)
+    trainer.fit(model, train_loader, val_loader)
 
 if __name__ == "__main__":
     main()
