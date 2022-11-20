@@ -1,7 +1,7 @@
-# Pose Guided Multi-person Image Generation From Text
+# KPE: Keypoint Pose Encoding for Transformer-based Image Generation
 
 This is the official code repo for the paper:
-"Pose Guided Multi-person Image Generation From Text" https://arxiv.org/abs/2203.04907
+"KPE: Keypoint Pose Encoding for Transformer-based Image Generation" https://arxiv.org/abs/2203.04907
 
 # Prepare Dataset
 The DeepFashion dataset can be downloaded from DeepFashion http://mmlab.ie.cuhk.edu.hk/projects/DeepFashion/. You will need to sign agreement prior to obtain password for unzipping the files. 
