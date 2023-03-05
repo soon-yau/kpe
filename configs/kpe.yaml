@@ -38,8 +38,8 @@ image_encoder:
 train_dataset:
   target: core.loader.PoseDatasetPickle
   params:
-    pickle_file: data/deepfashion_123_train.pickle
-    folder: data
+    pickle_file: data/deepfashion_syn_train.p
+    folder: datasets/syn/img
     pose_format: keypoint
 
 train_loader:
@@ -50,15 +50,28 @@ train_loader:
 val_dataset:
   target: core.loader.PoseDatasetPickle
   params:
-    pickle_file: data/deepfashion_123_test.pickle
-    folder: data
+    pickle_file: data/deepfashion_syn_test.p
+    folder: datasets/syn/img
     pose_format: keypoint
 
 val_loader:
   batch_size: 16
   num_workers: 8
-  drop_last: True
-  
+  drop_last: False
+
+test_dataset:
+  target: core.loader.PoseDatasetPickle
+  params:
+    pickle_file: data/deepfashion_syn_test.p
+    folder: datasets/syn/img
+    pose_format: keypoint
+
+test_loader:
+  batch_size: 16
+  num_workers: 8
+  drop_last: False
+
+
 loss_constant:
   text: 1
   pose: 10
