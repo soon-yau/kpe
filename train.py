@@ -24,10 +24,21 @@ from core.loader import PoseDatasetPickle
 from core.utils import get_obj_from_str, instantiate_from_config
 
 def get_parser():
-
+    def str2bool(v):
+        if isinstance(v, bool):
+            return v
+        if v.lower() in ("yes", "true", "t", "y", "1"):
+            return True
+        elif v.lower() in ("no", "false", "f", "n", "0"):
+            return False
+        else:
+            raise argparse.ArgumentTypeError("Boolean value expected.")
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help='Path to config file')
     parser.add_argument("--disable_logger", required=False, action='store_true')
+    parser.add_argument("--finetune_from", type=str, default=None)
+    parser.add_argument("-t", "--train", type=str2bool, default=False)
+
     return parser
 
 
@@ -49,7 +60,9 @@ def main():
         logger = None
 
     ckpt_cb = ModelCheckpoint(dirpath=log_dir, 
-                        monitor='val/loss_image', save_top_k=1)
+                        monitor='val/loss_image', 
+                        save_top_k=1,
+                        save_last=True)
     
 
     # Dataloader
@@ -67,6 +80,13 @@ def main():
 
     val_loader = DataLoader(val_dataset, shuffle=False, **config.val_loader)
     
+    test_dataset = get_obj_from_str(config.test_dataset.target)(\
+        text_encoder_config=config.text_encoder,
+        pose_encoder_config=config.pose_encoder,
+        **config.test_dataset.params)
+
+    test_loader = DataLoader(test_dataset, shuffle=False, **config.val_loader)
+        
 
     # Trainer
     lr_monitor_cb = LearningRateMonitor(logging_interval='epoch')
@@ -84,8 +104,24 @@ def main():
     print(f"Resetting learning rate to {config.optimizer.params.lr:.6f}")
     model = KPEModel(config)
 
-    #logger.watch(model.transformer, log='all', log_freq=100)
-    trainer.fit(model, train_loader, val_loader)
+    if not args.finetune_from == "":
+        print(f"Attempting to load state from {args.finetune_from}")
+        old_state = torch.load(args.finetune_from, map_location="cpu")
+        if "state_dict" in old_state:
+            print(f"Found nested key 'state_dict' in checkpoint, loading this instead")
+            old_state = old_state["state_dict"]
+        m, u = model.load_state_dict(old_state, strict=False)
+        if len(m) > 0:
+            print("missing keys:")
+            print(m)
+        if len(u) > 0:
+            print("unexpected keys:")
+            print(u)
+
+    if args.train:
+        trainer.fit(model, train_loader, val_loader)
+
+    trainer.test(model, dataloaders=test_loader)
 
 if __name__ == "__main__":
     main()
