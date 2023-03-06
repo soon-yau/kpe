@@ -152,7 +152,7 @@ class KPEModel(pl.LightningModule):
         if tokens.shape[1] > total_seq_len:
             tokens = tokens[:, :-1]
 
-        seq_offset = text_len
+        seq_offset = text_len 
         outputs = self.transformer(tokens)
         logits = self.to_logits(outputs)
         max_neg_value = -torch.finfo(logits.dtype).max
@@ -171,8 +171,9 @@ class KPEModel(pl.LightningModule):
         image_logits = rearrange(image_logits, 'n d c -> n c d')
         
         loss_text = self.lambda_text * F.cross_entropy(text_logits, text_tokens[:,1:])
+
         loss_image = self.lambda_image * F.cross_entropy(image_logits, \
-                                                        image_tokens+self.text_token_size)
+                                                        image_tokens + self.text_token_size)
         loss_pose = self.lambda_pose * F.mse_loss(pose_outputs, pose_embedding)
         
         total_loss = (loss_text + loss_pose + loss_image)/self.lambda_image
@@ -181,7 +182,7 @@ class KPEModel(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
 
-        text_tokens, pose_tokens, image_tensor = batch
+        text_tokens, pose_tokens, image_tensor = batch['text_tokens'], batch['pose_tokens'], batch['image_tensor']
         image_tokens = self.image_encoder(image_tensor)
         losses = self.forward(text_tokens, pose_tokens, image_tokens, return_loss=True)
 
@@ -194,7 +195,7 @@ class KPEModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
 
-        text_tokens, pose_tokens, image_tensor = batch
+        text_tokens, pose_tokens, image_tensor = batch['text_tokens'], batch['pose_tokens'], batch['image_tensor']
         image_tokens = self.image_encoder(image_tensor)
         losses = self.forward(text_tokens, pose_tokens, image_tokens, return_loss=True)
 
@@ -202,6 +203,27 @@ class KPEModel(pl.LightningModule):
         self.log('val/loss_pose', losses['pose'])
         self.log('val/loss_image', losses['image'])
         self.log('val/loss_total', losses['total'])
+
+    @torch.no_grad()
+    def test_step(self, batch, batch_idx):
+        text_tokens, pose_tokens, image_tensor = batch['text_tokens'], batch['pose_tokens'], batch['image_tensor']
+        filenames = batch['filename']
+
+        image_transform = T.Compose([
+            T.CenterCrop((256,176)),
+            T.ToPILImage()])
+            
+        gt_root = './results/gt'
+        sample_root = './results/samples' 
+        os.makedirs(gt_root,exist_ok=True)
+        os.makedirs(sample_root,exist_ok=True)
+
+        images = self.generate_image(text_tokens, pose_tokens, None)
+        for sample, gt, fname in zip(images, image_tensor, filenames):
+            fname = fname.replace('/','-')
+            image_transform(sample).save(os.path.join(sample_root, fname))
+            image_transform(gt).save(os.path.join(gt_root, fname))
+
 
     def preprocess(self, texts:List[str], 
                       poses:np.array, 
@@ -242,9 +264,9 @@ class ImageLogger(Callback):
         self.frequency = frequency
         self.max_num_images = max_num_images
 
-    def log_image(self, pl_module, batch):
+    def log_image(self, pl_module, batch, split, batch_idx):
         device = pl_module.device
-        text_tokens, pose_tokens, image_tensor = batch
+        text_tokens, pose_tokens, image_tensor = batch['text_tokens'], batch['pose_tokens'], batch['image_tensor']
         text_tokens, pose_tokens, image_tensor = text_tokens.to(device), \
                                                  pose_tokens.to(device), image_tensor.to(device)
         if self.max_num_images:
@@ -260,10 +282,27 @@ class ImageLogger(Callback):
         pose_images =torch.stack([T.ToTensor()(pl_module.pose2image(pose)) for pose in poses])
         pose_images = pose_images.to(pl_module.device)
         display_image = torch.cat((pose_images, images, image_tensor), dim=-1)
-        pl_module.logger.experiment.log({"generated": [wandb.Image(image, caption=caption) \
+        pl_module.logger.experiment.log({f"samples/{split}": [wandb.Image(image, caption=caption) \
             for image, caption in zip(display_image, texts)]})
+
+        # save local
+        root = os.path.join(pl_module.logger.save_dir, "images", split)
+        image = torch.cat([image for image in display_image], 1)
+        filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
+            'styles',
+            pl_module.global_step,
+            pl_module.current_epoch,
+            batch_idx)
+        path = os.path.join(root, filename)
+        os.makedirs(os.path.split(path)[0], exist_ok=True)
+        T.ToPILImage()(image).save(path)
 
     @rank_zero_only
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, unused=0):
         if (batch_idx + 1) % self.frequency == 0:
-            self.log_image(pl_module, batch)
+            self.log_image(pl_module, batch, 'train', batch_idx)
+
+    @rank_zero_only
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, unused=0):
+        if (batch_idx + 1) % 30 == 0:
+            self.log_image(pl_module, batch, 'val', batch_idx)            

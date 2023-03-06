@@ -332,10 +332,10 @@ class KPE(nn.Module):
 '''
 
 class KPE:
-    def __init__(self, max_num_people):
+    def __init__(self, max_num_people, num_keypoints=25):
         super().__init__()
         self.max_num_people = max_num_people
-        self.num_keypoints = 25
+        self.num_keypoints = num_keypoints
 
     '''
         assume single sample, no batch dimension
@@ -353,7 +353,7 @@ class KPE:
         num_kp = tokens.shape[0]
         result = np.zeros((num_people, num_kp, 3))
         for p in range(num_people):
-            for i in range(self.num_keypoints):
+            for i in range(num_kp):
                 result[p,i,:] = tokens[i][3*p:3*(p+1)]
                 
         valid = np.mean(result, axis=(1,2))!=0

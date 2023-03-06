@@ -84,4 +84,8 @@ class PoseDatasetPickle(Dataset):
 
         pose_tokens = self.pose_encoder(keypoints)
 
-        return text_tokens, pose_tokens, image_tensor
+        ret = {'text_tokens':text_tokens,
+               'pose_tokens':pose_tokens,
+               'image_tensor':image_tensor,
+               'filename':sample.image}
+        return ret

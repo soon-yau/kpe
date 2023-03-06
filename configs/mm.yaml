@@ -1,0 +1,99 @@
+transformer:
+  target: dalle_pytorch.transformer.Transformer
+  params:
+    depth: 12
+    dim: 512
+    heads: 8
+    dim_head: 64
+    seq_len: 537
+    rotary_emb: False
+    image_fmap_size: 32
+ 
+text_encoder:
+  target: core.tokenizer.HugTokenizer
+  params:
+    bpe_path: tokenizer-mm.json
+    text_len: 256
+    truncate_text: True
+
+pose_encoder:
+  target: core.pose_utils.KPE
+  params:
+    max_num_people: 1
+    num_keypoints: 21
+
+image_encoder:
+  target: core.vae.VQGanVAE
+  params:
+    vqgan_model_path: checkpoints/vae/vqgan_deepfashion.ckpt
+    vqgan_config_path: checkpoints/vae/vqgan_deepfashion.yaml
+
+train_dataset:
+  target: core.loader.PoseDatasetPickle
+  params:
+    pickle_file: data/mm_train.pickle
+    folder: /home/soon/datasets/deepfashion_inshop/img
+    pose_format: keypoint
+
+train_loader:
+  batch_size: 32
+  num_workers: 16
+  drop_last: True
+
+val_dataset:
+  target: core.loader.PoseDatasetPickle
+  params:
+    pickle_file: data/mm_test.pickle
+    folder: /home/soon/datasets/deepfashion_inshop/img
+    pose_format: keypoint
+
+val_loader:
+  batch_size: 16
+  num_workers: 8
+  drop_last: True
+
+test_dataset:
+  target: core.loader.PoseDatasetPickle
+  params:
+    pickle_file: data/mm_test.pickle
+    folder: /home/soon/datasets/deepfashion_inshop/img
+    pose_format: keypoint
+
+test_loader:
+  batch_size: 32
+  num_workers: 16
+  drop_last: False
+
+
+loss_constant:
+  text: 1
+  pose: 10
+  image: 7
+
+optimizer:
+  target: torch.optim.AdamW
+  params:
+    lr: 6e-4
+
+scheduler:
+  target: torch.optim.lr_scheduler.ReduceLROnPlateau
+  params:
+    mode: min
+    factor: 0.5
+    patience: 3
+    cooldown: 0
+    min_lr: 0.000001
+    threshold: 0.1
+    verbose: True
+
+trainer:
+  max_epochs: 225
+  #num_sanity_val_steps: 0
+  gradient_clip_val: 0.5
+  #val_check_interval: 200
+  #distributed_backend: ddp
+  #gpus: [0]
+
+logging:
+  image_frequency: 100
+  max_images: 8
