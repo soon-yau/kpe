@@ -9,3 +9,4 @@ tokenizers>=0.10.3
 sklearn>=1.0.1
 axial-positional-embedding
 wandb>=0.12.5
+rotary-embedding-torch
